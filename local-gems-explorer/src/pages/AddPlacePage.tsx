@@ -12,8 +12,8 @@ import Navbar from "@/components/layout/Navbar";
 import Footer from "@/components/layout/Footer";
 import { useAuth } from "@/contexts/AuthContext";
 import { CATEGORIES } from "@/config/categories";
+import { BASE_URL } from "@/lib/api";
 
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 const amenityOptions = ["Parking", "Drinking Water", "Washroom", "Safety", "Network", "Food Nearby", "Shade", "Benches"];
 
 const AddPlacePage = () => {
