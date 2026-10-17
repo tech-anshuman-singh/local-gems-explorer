@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
-const cors    = require("cors");
+const cors = require("cors");
+const mongoose = require("mongoose");
 const connectDB = require("./config/db");
 
 // ── Public routes ─────────────────────────────────────────────────────────
@@ -23,18 +24,96 @@ const adminImagesRoutes    = require("./routes/admin/images");
 
 const app = express();
 
-connectDB();
+// ── CORS Configuration ───────────────────────────────────────────────────
+const staticOrigins = [
+  "http://localhost:5173",
+  "http://localhost:8080",
+  "http://localhost:3000",
+  "http://localhost:5000",
+  "http://localhost:5050",
+  "https://local-gems-explorer-kappa.vercel.app",
+];
 
-app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "http://localhost:8080",
-    "http://localhost:3000",
-    process.env.CLIENT_URL,
-  ].filter(Boolean),
-  credentials: true,
-}));
-app.use(express.json());
+const envOrigins = process.env.CLIENT_URL
+  ? process.env.CLIENT_URL.split(",").map((s) => s.trim().replace(/\/$/, ""))
+  : [];
+
+const allowedOrigins = new Set([...staticOrigins, ...envOrigins]);
+
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true; // Allow non-browser requests (curl, Postman, server-to-server)
+  const normalized = origin.replace(/\/$/, "");
+  if (allowedOrigins.has(normalized)) return true;
+  try {
+    const hostname = new URL(normalized).hostname;
+    if (hostname.endsWith(".vercel.app")) return true;
+  } catch {
+    return false;
+  }
+  return false;
+};
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  })
+);
+
+app.options("*", cors());
+
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+// ── Root & Health Check ───────────────────────────────────────────────────
+// Accessible without requiring database connection
+app.get("/", (req, res) => {
+  res.json({
+    name: "Local Gems Explorer API",
+    status: "running",
+    health: "/api/health",
+  });
+});
+
+app.get("/api/health", (req, res) => {
+  const stateMap = {
+    0: "disconnected",
+    1: "connected",
+    2: "connecting",
+    3: "disconnecting",
+  };
+  res.json({
+    status: "ok",
+    database: stateMap[mongoose.connection.readyState] || "unknown",
+    environment: process.env.VERCEL ? "vercel-production" : (process.env.NODE_ENV || "development"),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// ── Database Connection Middleware ─────────────────────────────────────────
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    console.error("Database connection failed on request:", err.message);
+    return res.status(503).json({
+      error: "Database connection failed",
+      message:
+        process.env.NODE_ENV === "production"
+          ? "Unable to connect to the database. Please verify MONGO_URI in your environment."
+          : err.message,
+    });
+  }
+});
 
 // ── Mount public routes ───────────────────────────────────────────────────
 app.use("/api/auth",      authRoutes);
@@ -54,14 +133,25 @@ app.use("/api/admin/amenities",  adminAmenitiesRoutes);
 app.use("/api/admin/mentions",   adminMentionsRoutes);
 app.use("/api/admin/images",     adminImagesRoutes);
 
-// ── Health check ──────────────────────────────────────────────────────────
-app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+// ── 404 Route handler ─────────────────────────────────────────────────────
+app.use((req, res) => {
+  res.status(404).json({ message: `Route ${req.method} ${req.url} not found` });
+});
 
 // ── Global error handler ──────────────────────────────────────────────────
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error(err.stack || err.message);
   res.status(err.status || 500).json({ message: err.message || "Internal Server Error" });
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// ── Local Server Listen ───────────────────────────────────────────────────
+// When running locally, start the HTTP server. On Vercel, the app is exported as a Serverless Function.
+if (require.main === module && !process.env.VERCEL) {
+  const PORT = process.env.PORT || 5050;
+  connectDB().catch((err) => {
+    console.error("Initial MongoDB connection warning:", err.message);
+  });
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
+
+module.exports = app;
